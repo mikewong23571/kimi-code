@@ -1675,3 +1675,29 @@ describe('PromptService.applyAgentState (POST /sessions/{sid}/profile path)', ()
     });
   });
 });
+
+describe('PromptService session close clears active prompt', () => {
+  it('clears _active on session close so a reopened/resumed session is not wedged', async () => {
+    // A prompt whose turn never terminated (no turn.started/turn.ended — e.g. a
+    // launch that produced nothing) leaves a non-terminal _active entry. Because
+    // _active is in-memory, if the session closes and is reopened/resumed in the
+    // SAME daemon process, a stale _active would make every later submit queue
+    // behind a phantom active prompt forever. Closing must release it.
+    const { bridge } = makeBridge();
+    const { bus } = makeBus();
+    const { sessionService, triggerClose } = makeSessionService();
+    const impl = new PromptService(bridge, bus, makeAuth(), sessionService, new NoopLogService());
+
+    await impl.submit(SID, mkBodyMinimal({ content: [{ type: 'text', text: 'one' }] }));
+    // No turn.started/turn.ended dispatched → _active stays set, non-terminal.
+    expect(impl._activeForTest(SID)).toBeDefined();
+
+    triggerClose(SID);
+    expect(impl._activeForTest(SID)).toBeUndefined();
+
+    // A fresh submit after reopen runs immediately instead of queueing behind
+    // the stale active prompt.
+    const second = await impl.submit(SID, mkBodyMinimal({ content: [{ type: 'text', text: 'two' }] }));
+    expect(second.status).toBe('running');
+  });
+});

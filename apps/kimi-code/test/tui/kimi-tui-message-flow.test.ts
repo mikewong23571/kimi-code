@@ -1155,6 +1155,62 @@ command = "vim"
     ]);
   });
 
+  it('returns to idle when a turn-level error arrives with no active turn', async () => {
+    const { driver } = await makeDriver();
+
+    driver.handleUserInput('hello');
+    expect(driver.state.appState.streamingPhase).toBe('waiting');
+
+    // A request-level error with no turn.started / turn.ended (e.g. a launch
+    // rejected before any turn ran). Recovery must not hinge solely on
+    // turn.ended, or the busy flag stays stuck and the next message is silently
+    // swallowed by the queue.
+    driver.sessionEventHandler.handleEvent(
+      {
+        type: 'error',
+        agentId: 'main',
+        sessionId: 'ses-1',
+        code: 'provider.api_error',
+        message: 'Error: terminated',
+      } as unknown as Event,
+      () => {},
+    );
+
+    expect(driver.state.appState.streamingPhase).toBe('idle');
+  });
+
+  it('does not idle an actively streaming turn when a non-terminal error arrives', async () => {
+    const { driver } = await makeDriver();
+
+    driver.handleUserInput('hello');
+    // A turn has started — it is actively in progress.
+    driver.sessionEventHandler.handleEvent(
+      {
+        type: 'turn.started',
+        turnId: 1,
+        origin: { kind: 'user' },
+        agentId: 'main',
+        sessionId: 'ses-1',
+      } as unknown as Event,
+      () => {},
+    );
+
+    // A mid-turn, non-terminal error (e.g. a records-write failure) must NOT
+    // idle a running turn — that is left to turn.ended.
+    driver.sessionEventHandler.handleEvent(
+      {
+        type: 'error',
+        agentId: 'main',
+        sessionId: 'ses-1',
+        code: 'records.write_failed',
+        message: 'disk full',
+      } as unknown as Event,
+      () => {},
+    );
+
+    expect(driver.state.appState.streamingPhase).not.toBe('idle');
+  });
+
   it('keeps the transcript intact when undo RPC fails', async () => {
     const session = makeSession({
       undoHistory: vi.fn(async () => {

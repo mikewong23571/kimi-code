@@ -260,7 +260,7 @@ export class SessionEventHandler {
       case 'goal.updated': this.handleGoalUpdated(event); break;
       case 'skill.activated': this.handleSkillActivated(event); break;
       case 'plugin_command.activated': this.handlePluginCommandActivated(event); break;
-      case 'error': this.handleSessionError(event); break;
+      case 'error': this.handleSessionError(event, sendQueued); break;
       case 'warning': this.handleSessionWarning(event); break;
       case 'compaction.started': this.handleCompactionBegin(event); break;
       case 'compaction.completed': this.handleCompactionEnd(event, sendQueued); break;
@@ -842,10 +842,34 @@ export class SessionEventHandler {
     }
   }
 
-  private handleSessionError(event: ErrorEvent): void {
+  private handleSessionError(
+    event: ErrorEvent,
+    sendQueued: (item: QueuedMessage) => void,
+  ): void {
     this.host.streamingUI.flushNow();
     this.host.streamingUI.resetToolUi();
     this.host.streamingUI.finalizeLiveTextBuffers('idle');
+    // A request-level error that arrives while the session is busy but no turn
+    // is actually in progress means the submitted request never produced a turn
+    // — and no `turn.ended` will come to release the optimistic busy state.
+    // Return to idle and drain the queue so the next message is sent instead of
+    // silently swallowed (the "no reaction after error" wedge). An error raised
+    // while a turn IS streaming (`hasActiveTurn`) is left to `turn.ended`, so a
+    // mid-turn non-terminal error (e.g. a records-write failure) does not idle a
+    // running turn.
+    if (
+      this.host.state.appState.streamingPhase !== 'idle' &&
+      !this.host.streamingUI.hasActiveTurn()
+    ) {
+      this.host.setAppState({ streamingPhase: 'idle' });
+      this.host.resetLivePane();
+      const next = this.host.shiftQueuedMessage();
+      if (next !== undefined) {
+        setTimeout(() => {
+          sendQueued(next);
+        }, 0);
+      }
+    }
     if (event.code === OAUTH_LOGIN_REQUIRED_CODE) {
       this.host.showError(OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE);
       return;

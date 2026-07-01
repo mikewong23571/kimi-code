@@ -307,6 +307,15 @@ export class PromptService
       this.sessionService.onDidClose(({ sessionId }) => {
         this._agentState.delete(sessionId);
         this._dispatchLog.delete(sessionId);
+        // Release any active prompt for the closing session. `_active` is
+        // in-memory: if a session closes with a non-terminal active prompt
+        // (e.g. a turn that never emitted `turn.ended`) and is later reopened /
+        // resumed in the SAME daemon process, a stale `_active` would make every
+        // subsequent submit queue behind a phantom active prompt forever.
+        const closingPrefix = `${sessionId}${String.fromCharCode(0)}`;
+        for (const activeKey of [...this._active.keys()]) {
+          if (activeKey.startsWith(closingPrefix)) this._active.delete(activeKey);
+        }
         for (const key of this._queued.keys()) {
           if (key.startsWith(`${sessionId}\u0000`)) this._queued.delete(key);
         }
